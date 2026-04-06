@@ -6,6 +6,8 @@ from typing import Any, Dict, Generator, Optional
 
 import requests
 
+from .http_policy import should_retry_transient_http
+
 
 class ApiError(RuntimeError):
   def __init__(self, status: int, body: str, trace_id: Optional[str] = None) -> None:
@@ -30,19 +32,27 @@ class AiSandboxClient:
     })
 
   def _request(self, method: str, path: str, json_body: Optional[Dict[str, Any]] = None, accept: str = "application/json") -> requests.Response:
-    retries = 0
+    attempt = 0
     while True:
-      response = self._session.request(
-        method=method,
-        url=f"{self.base_url}/api/v1{path}",
-        json=json_body,
-        headers={"Accept": accept},
-        timeout=self.timeout_seconds,
-        stream=accept == "text/event-stream",
-      )
-      if response.status_code in {429, 500, 502, 503, 504} and retries < self.max_retries:
-        retries += 1
-        time.sleep(0.2 * retries)
+      try:
+        response = self._session.request(
+          method=method,
+          url=f"{self.base_url}/api/v1{path}",
+          json=json_body,
+          headers={"Accept": accept},
+          timeout=self.timeout_seconds,
+          stream=accept == "text/event-stream",
+        )
+      except requests.RequestException as exc:
+        if attempt < self.max_retries:
+          attempt += 1
+          time.sleep(0.2 * attempt)
+          continue
+        raise RuntimeError(f"Network error: {exc}") from exc
+
+      if should_retry_transient_http(method, response.status_code) and attempt < self.max_retries:
+        attempt += 1
+        time.sleep(0.2 * attempt)
         continue
       if response.status_code >= 400:
         raise ApiError(response.status_code, response.text, response.headers.get("x-trace-id"))
