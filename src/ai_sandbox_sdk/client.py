@@ -6,7 +6,7 @@ from typing import Any, Dict, Generator, Optional
 
 import requests
 
-from .http_policy import should_retry_transient_http
+from .http_policy import get_retry_delay_seconds, should_retry_transient_http
 
 
 class ApiError(RuntimeError):
@@ -46,20 +46,25 @@ class AiSandboxClient:
       except requests.RequestException as exc:
         if attempt < self.max_retries:
           attempt += 1
-          time.sleep(0.2 * attempt)
+          time.sleep(get_retry_delay_seconds(attempt))
           continue
         raise RuntimeError(f"Network error: {exc}") from exc
 
       if should_retry_transient_http(method, response.status_code) and attempt < self.max_retries:
+        response.close()
         attempt += 1
-        time.sleep(0.2 * attempt)
+        time.sleep(get_retry_delay_seconds(attempt))
         continue
       if response.status_code >= 400:
         raise ApiError(response.status_code, response.text, response.headers.get("x-trace-id"))
       return response
 
   def _json(self, method: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Any:
-    return self._request(method, path, json_body=json_body).json()
+    response = self._request(method, path, json_body=json_body)
+    try:
+      return response.json()
+    finally:
+      response.close()
 
   def create_agent(self, payload: Dict[str, Any]) -> Any: return self._json("POST", "/agents", payload)
   def update_agent(self, agent_id: int, payload: Dict[str, Any]) -> Any: return self._json("PUT", f"/agents/{agent_id}", payload)
@@ -75,10 +80,13 @@ class AiSandboxClient:
 
   def send_chat_stream(self, agent_id: int, payload: Dict[str, Any]) -> Generator[str, None, None]:
     response = self._request("POST", f"/agents/{agent_id}/chat", json_body=payload, accept="text/event-stream")
-    for line in response.iter_lines(decode_unicode=True):
-      if not line or not line.startswith("data: "):
-        continue
-      data = line[6:].strip()
-      if data == "[DONE]":
-        break
-      yield data
+    try:
+      for line in response.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data: "):
+          continue
+        data = line[6:].strip()
+        if data == "[DONE]":
+          break
+        yield data
+    finally:
+      response.close()
