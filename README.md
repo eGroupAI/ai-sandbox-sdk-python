@@ -78,3 +78,7 @@ pip install ai-sandbox-sdk-python
 - [Integration Guide](docs/INTEGRATION.md)
 - [Quickstart Example](examples/quickstart.py)
 - [Repository](https://github.com/eGroupAI/ai-sandbox-sdk-python)
+
+## License
+
+This SDK is released under the Apache-2.0 license.
